@@ -4,6 +4,9 @@ const MySQL = require('mysql2');
 const fs = require("node:fs");
 const mongoose = require("mongoose");
 
+const preRegSchema = require("../../db/models/preReg");
+const RegisteredUserSchema = require("../../db/models/registeredUser");
+
 const conn = MySQL.createConnection({
     host: "stratice-db2-stratice.aivencloud.com",
     port: 12921,
@@ -15,79 +18,105 @@ const conn = MySQL.createConnection({
     }
 });
 
-Router.use(Express.json());
+module.exports = function(ctx) {
+    Router.use(Express.json());
 
-Router.post("/newauth", (req, res) => {
-    const username = req.body.user.username;
-    const serverId = req.body.server.id;
+    Router.post("/newauth", async (req, res) => {
+        const username = req.body.user.username;
+        const serverId = req.body.server.id;
 
-    const requestUUID = generateUUID();
-    const userUUID = generateUUID();
+        const requestUUID = generateUUID();
+        const userUUID = generateUUID();
 
-    
+        setTimeout(async () => {
+            async function regUser() {
+                try {
+                    await new preRegSchema({
+                        UserID: userUUID,
+                        AuthID: requestUUID,
+                        DiscordUserID: username,
+                        DiscordGuildID: serverId,
+                        AuthSuccessful: false
+                    }).save();
 
-    conn.connect()
+                    return res.json({ authUrl: `https://notable-weasel-surely.ngrok-free.app/v1/auth/register/${requestUUID}`, straticeUUID: userUUID })
+                } catch (err) {
+                    res.status(504);
+                    throw err;
+                }
+            }
 
-    conn.query(`SELECT * FROM userReg WHERE \`DiscordUserID\` = '${username}';`, (err, rows, fields) => {
-        if (err) throw err;
+            await preRegSchema.findOne({ "DiscordUserID": username }).then(async (dbres) => {
+                if (!dbres) return await regUser()
+                else return res.json({ authUrl: `https://notable-weasel-surely.ngrok-free.app/v1/auth/register/${dbres.AuthID}`, straticeUUID: dbres.UserID });
+                // else await regUser();/
+            });
+        }, 500);
+    });
 
-        const row = rows[0];
+    Router.get("/authreg/:authid", async (req, res) => {
+        setTimeout(async () => {
+            async function createRegisteredUser(UserID, DiscordUserID, DiscordGuildID) {
+                await new RegisteredUserSchema({
+                    UserID,
+                    DiscordUserID,
+                    DiscordGuildID
+                }).save()
 
-        if(!rows[0]) {
-            conn.query(`INSERT INTO \`userReg\` (\`UserID\`, \`AuthID\`, \`DiscordUserID\`, \`DiscordGuildID\`) VALUES ('${userUUID}', '${requestUUID}', '${username}', '${serverId}');`, (err, rows, fields) => {
-                if (err) throw err
-            })
+                await preRegSchema.findOneAndUpdate({ AuthID: req.params.authid }, { AuthSuccessful: true }, { upsert: false });
 
-            conn.end()
-            return res.json({authUrl: `https://notable-weasel-surely.ngrok-free.app/reqgen/authreg/${requestUUID}`, straticeUUID: userUUID});
-        } else {
-            conn.end()
-            return res.json({authUrl: `https://notable-weasel-surely.ngrok-free.app/reqgen/authreg/${row.AuthID}`, straticeUUID: row.UserID});
-        }
+                return res.redirect('../../welcome/');
+            };
+
+            await preRegSchema.findOne({ AuthID: req.params.authid }).then(async (dbres) => {
+                if (!dbres) res.send("Unknown auth code. Error code STRA.AUTH.UNKWNAUTH").status(400);
+                else if (dbres.UserID && dbres.AuthSuccessful === false) await createRegisteredUser(dbres.UserID, dbres.DiscordUserID, dbres.DiscordGuildID);
+                else if (dbres.UserID && dbres.AuthSuccessful === true) return res.send("Invalid auth code. Error code STRA.AUTH.ALRUSD").status(400);
+                else res.send("Unknown auth code. Error code STRA.AUTH.UNKWNAUTH").status(400);
+            });
+        }, 500)
+        // try {
+        //     await conn.connect();
+
+        //     conn.query(`SELECT * FROM userReg WHERE \`AuthID\` = '${req.params.authid}';`, (err, rows, fields) => {
+        //         if (err) throw err;
+        //         if (rows[1]) throw err && conn.end();
+        
+        //         const row = rows[0];
+
+        
+        //         conn.query(`INSERT INTO \`RegisteredUsers\` (\`UserID\`, \`RegisteredGuild\`, \`DiscordUserID\`) VALUES ('${row.UserID}', '${row.DiscordGuildID}', '${row.DiscordUserID}');`, (err, rows, fields) => {
+        //             if (err) throw err;
+        
+        //             conn.query(`UPDATE \`userReg\` SET \`AuthSuccess\` = 1 WHERE \`AuthID\` = '${req.params.authid}';`, (err, rows, fields) => { if (err) throw err })
+        //         })
+        //     });
+        // } catch (err) {
+        //     conn.destroy()
+        //     throw err
+        // } finally {
+        //     // conn.end()
+        // }
+    });
+
+    Router.get('/test', (req, res) => {
+        res.send('yey')
     })
-});
 
-Router.get("/authreg/:authid", async (req, res) => {
-    try {
-        await conn.connect();
-
-        conn.query(`SELECT * FROM userReg WHERE \`AuthID\` = '${req.params.authid}';`, (err, rows, fields) => {
+    Router.get('/dbcmd', (req, res) => {
+        conn.connect()
+        conn.query('CREATE TABLE userReg (UserID varchar(255), AuthID, varchar(255), DiscordID int);', (err, rows, fields) => {
             if (err) throw err;
-            if (rows[1]) throw err && conn.end();
-    
+
             const row = rows[0];
 
-    
-            conn.query(`INSERT INTO \`RegisteredUsers\` (\`UserID\`, \`RegisteredGuild\`, \`DiscordUserID\`) VALUES ('${row.UserID}', '${row.DiscordGuildID}', '${row.DiscordUserID}');`, (err, rows, fields) => {
-                if (err) throw err;
-    
-                conn.query(`UPDATE \`userReg\` SET \`AuthSuccess\` = 1 WHERE \`AuthID\` = '${req.params.authid}';`, (err, rows, fields) => { if (err) throw err })
-            })
-        });
-    } catch (err) {
-        conn.destroy()
-        throw err
-    } finally {
-        // conn.end()
-    }
-
-    return res.redirect('../../welcome/')
-});
-
-Router.get('/dbcmd', (req, res) => {
-    conn.connect()
-    conn.query('CREATE TABLE userReg (UserID varchar(255), AuthID, varchar(255), DiscordID int);', (err, rows, fields) => {
-        if (err) throw err;
-
-        const row = rows[0];
-
-        conn.query
+            conn.query
+        })
+        conn.end()
     })
-    conn.end()
-})
 
-
-module.exports = Router;
+    return Router;
+}
 
 
 function generateUUID() { // Public Domain/MIT
